@@ -63,15 +63,14 @@ cd backend
 cp .env.example .env
 \`\`\`
 In `.env`:
-- `DATABASE_URL`: your Supabase URI, with `postgresql://` changed to
-  `postgresql+psycopg2://` and `?sslmode=require` appended
+- `DATABASE_URL`: paste the supabase URL here
 - `GROQ_API_KEY`: optional, from step 2
 
 See the comments in `.env.example` for a worked example.
 
 ## 4. Create tables + load the starter curriculum
 \`\`\`bash
-python -m venv venv && source venv/bin/activate
+python -m venv venv && source venv/Scripts/activate
 pip install -r requirements.txt
 python -m app.seed
 \`\`\`
