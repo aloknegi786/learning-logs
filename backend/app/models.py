@@ -28,6 +28,7 @@ class Category(str, enum.Enum):
     HLD = "High Level Design"
     LLD = "Low Level Design"
     DESIGN_PATTERNS = "Design Patterns"
+    AGENTS = "Agents & Multi-Agent Systems"
     OTHER = "Other"
 
 
