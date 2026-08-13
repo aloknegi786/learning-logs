@@ -24,6 +24,7 @@ class Category(str, enum.Enum):
     OOP = "OOP"
     OS = "Operating Systems"
     CN = "Computer Networks"
+    DBMS = "Database Management Systems"
     DSA = "Data Structures & Algorithms"
     HLD = "High Level Design"
     LLD = "Low Level Design"
