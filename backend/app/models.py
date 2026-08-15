@@ -20,19 +20,6 @@ from sqlalchemy.orm import relationship
 from .database import Base
 
 
-class Category(str, enum.Enum):
-    OOP = "OOP"
-    OS = "Operating Systems"
-    CN = "Computer Networks"
-    DBMS = "Database Management Systems"
-    DSA = "Data Structures & Algorithms"
-    HLD = "High Level Design"
-    LLD = "Low Level Design"
-    DESIGN_PATTERNS = "Design Patterns"
-    AGENTS = "Agents & Multi-Agent Systems"
-    OTHER = "Other"
-
-
 class Status(str, enum.Enum):
     PENDING = "pending"
     COMPLETED = "completed"
@@ -44,19 +31,32 @@ class GenerationSource(str, enum.Enum):
     FALLBACK_ROUND_ROBIN = "fallback_round_robin"
 
 
+class Category(Base):
+    """A real, user-editable table now — not a fixed code-level enum.
+    Add/rename/delete freely from the app; deleting one that goals still
+    reference is blocked at the CRUD layer (see crud.delete_category)."""
+
+    __tablename__ = "categories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class Goal(Base):
     __tablename__ = "goals"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
-    category = Column(Enum(Category, name="category_enum"), nullable=False)
+    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False)
     status = Column(Enum(Status, name="status_enum"), default=Status.PENDING, nullable=False)
     # lower number = higher priority = surfaced sooner
     priority = Column(Integer, default=100, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     completed_at = Column(DateTime, nullable=True)
 
+    category_obj = relationship("Category")
     daily_entries = relationship(
         "DailyGoal", back_populates="goal", cascade="all, delete-orphan"
     )
@@ -66,6 +66,12 @@ class Goal(Base):
         cascade="all, delete-orphan",
         order_by="JournalEntry.created_at.desc()",
     )
+
+    @property
+    def category(self) -> str | None:
+        # crud eager-loads category_obj (joinedload) wherever goals are
+        # listed in bulk, so this never triggers a per-row N+1 query.
+        return self.category_obj.name if self.category_obj else None
 
     @property
     def entry_count(self) -> int:
@@ -103,9 +109,13 @@ class JournalEntry(Base):
 class DailyGoal(Base):
     """Records which goals were surfaced on which calendar day, so the
     home screen stays stable for the rest of that day instead of reshuffling
-    on every request. Populated by the 3 AM generation job (LLM-picked, or
-    a deterministic fallback — see `source`), with a same-day safety net in
-    the /api/today endpoint in case the job hasn't run yet."""
+    on every request. Populated on the first /api/today request of a new
+    day (LLM-picked, or a deterministic fallback — see `source`).
+
+    focus_category/note are snapshotted once per day (same value repeated
+    on every row for that surfaced_on date) so a later visit that same day
+    — or changing/clearing the focus setting afterward — doesn't retroactively
+    change the explanation shown for a day that's already been decided."""
 
     __tablename__ = "daily_goals"
 
@@ -118,6 +128,8 @@ class DailyGoal(Base):
         default=GenerationSource.FALLBACK_ROUND_ROBIN,
         nullable=False,
     )
+    focus_category = Column(String(100), nullable=True)  # snapshot of that day's focus, if any
+    note = Column(Text, nullable=True)  # e.g. a focus-category shortfall notice
 
     goal = relationship("Goal", back_populates="daily_entries")
 
@@ -131,8 +143,10 @@ class CompletionEvent(Base):
 
     goal_id is nullable with ON DELETE SET NULL: if the goal itself is later
     deleted, this historical activity record (and the heatmap day it
-    contributed to) is preserved — category/title are snapshotted at
-    completion time for exactly this reason."""
+    contributed to) is preserved. `category` is a plain snapshotted string
+    (not a foreign key) for the same reason, extended to categories too: if
+    a category later gets renamed or deleted, past activity still shows the
+    category name as it was at the time the goal was completed."""
 
     __tablename__ = "completion_events"
     __table_args__ = (UniqueConstraint("goal_id", name="uq_completion_events_goal_id"),)
@@ -142,7 +156,7 @@ class CompletionEvent(Base):
         UUID(as_uuid=True), ForeignKey("goals.id", ondelete="SET NULL"), nullable=True, index=True
     )
     goal_title = Column(String(255), nullable=False)
-    category = Column(Enum(Category, name="category_enum"), nullable=False)
+    category = Column(String(100), nullable=False)
 
     completed_on = Column(Date, nullable=False, index=True)  # calendar date, for heatmap grouping
     completed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -152,10 +166,25 @@ class Settings(Base):
     """Single-row app settings. Deliberately a plain table (not tied to a
     user id) since this is a single-user tool today — but isolated here
     rather than scattered as env vars, so it's easy to key by user_id later
-    without touching the rest of the schema."""
+    without touching the rest of the schema.
+
+    focus_category_id/focus_expires_on implement a temporary category bias
+    for daily selection: null means no focus active. When set, it auto-
+    expires after 7 days (crud.get_settings lazily clears it once expired —
+    no background job needed) or can be cleared manually before that."""
 
     __tablename__ = "settings"
 
     id = Column(Integer, primary_key=True, default=1)
     daily_goal_count = Column(Integer, default=3, nullable=False)
+    focus_category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=True)
+    focus_expires_on = Column(Date, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    focus_category = relationship("Category")
+
+    @property
+    def focus_days_remaining(self) -> int | None:
+        if not self.focus_expires_on:
+            return None
+        return max((self.focus_expires_on - date.today()).days, 0)

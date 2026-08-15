@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Trash2, NotebookPen } from "lucide-react";
+import { Check, Trash2, NotebookPen, Search, X } from "lucide-react";
 import { api } from "../api";
 import { colorForCategory } from "../categoryColors";
 import AddGoalForm from "./AddGoalForm";
@@ -13,6 +13,7 @@ export default function AllGoalsView({ showToast }) {
   const [categories, setCategories] = useState([]);
   const [stats, setStats] = useState(null);
   const [filter, setFilter] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
   const [error, setError] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [journalGoal, setJournalGoal] = useState(null);
@@ -90,8 +91,15 @@ export default function AllGoalsView({ showToast }) {
     );
   }
 
-  const visible =
-    filter === "all" ? goals : goals.filter((g) => g.category === filter);
+  const q = searchQuery.trim().toLowerCase();
+  const visible = goals.filter((g) => {
+    const matchesCategory = filter === "all" || g.category === filter;
+    const matchesSearch =
+      !q ||
+      g.title.toLowerCase().includes(q) ||
+      g.category.toLowerCase().includes(q);
+    return matchesCategory && matchesSearch;
+  });
 
   return (
     <>
@@ -112,6 +120,25 @@ export default function AllGoalsView({ showToast }) {
             <div className="scroll-pane" ref={scrollRef}>
               <div className="section-label">All goals</div>
 
+              <div className="search-bar">
+                <Search size={15} />
+                <input
+                  type="text"
+                  placeholder="Search by title or category…"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+                {searchQuery && (
+                  <button
+                    className="search-clear"
+                    onClick={() => setSearchQuery("")}
+                    aria-label="Clear search"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+
               <div className="filter-pills">
                 <button
                   className={`filter-pill ${filter === "all" ? "active" : ""}`}
@@ -121,18 +148,20 @@ export default function AllGoalsView({ showToast }) {
                 </button>
                 {categories.map((c) => (
                   <button
-                    key={c}
-                    className={`filter-pill ${filter === c ? "active" : ""}`}
-                    onClick={() => setFilter(c)}
+                    key={c.id}
+                    className={`filter-pill ${filter === c.name ? "active" : ""}`}
+                    onClick={() => setFilter(c.name)}
                   >
-                    {c}
+                    {c.name}
                   </button>
                 ))}
               </div>
 
               <div className="log-card">
                 {visible.length === 0 ? (
-                  <div className="empty-state">Nothing here yet.</div>
+                  <div className="empty-state">
+                    {searchQuery || filter !== "all" ? "No goals match." : "Nothing here yet."}
+                  </div>
                 ) : (
                   visible.map((g) => {
                     const isDone = g.status === "completed";

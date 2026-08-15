@@ -48,9 +48,42 @@ const SOURCE_LABELS = {
   fallback_round_robin: "Round robin",
 };
 
+function GoalRow({ g, toggle, setJournalGoal }) {
+  const isDone = g.status === "completed";
+  const color = colorForCategory(g.category);
+  return (
+    <div className="goal-row">
+      <button
+        className={`checkbox-btn ${isDone ? "done" : ""}`}
+        onClick={() => toggle(g)}
+        aria-label={isDone ? "Mark as not done" : "Mark as done"}
+      >
+        {isDone && <Check size={14} strokeWidth={3} />}
+      </button>
+      <div className="goal-body">
+        <p className={`goal-title ${isDone ? "done" : ""}`}>{g.title}</p>
+        <div className="goal-tags">
+          <span className="category-chip" style={{ color }}>
+            {g.category}
+          </span>
+        </div>
+      </div>
+      <button
+        className={`journal-btn ${g.entry_count > 0 ? "has-entries" : ""}`}
+        onClick={() => setJournalGoal(g)}
+        aria-label="Open learning journal"
+      >
+        <NotebookPen size={13} />
+        {g.entry_count > 0 && g.entry_count}
+      </button>
+    </div>
+  );
+}
+
 export default function TodayView({ showToast }) {
   const [goals, setGoals] = useState(null);
   const [source, setSource] = useState(null);
+  const [focusCategory, setFocusCategory] = useState(null);
   const [error, setError] = useState(null);
   const [journalGoal, setJournalGoal] = useState(null);
   const scrollRef = useRef(null);
@@ -65,6 +98,8 @@ export default function TodayView({ showToast }) {
       .then((res) => {
         setGoals(res.goals);
         setSource(res.source);
+        setFocusCategory(res.focus_category);
+        if (res.note) showToast?.(res.note, "info");
       })
       .catch((e) => setError(e.message));
   }
@@ -107,6 +142,8 @@ export default function TodayView({ showToast }) {
   }
 
   const done = goals.filter((g) => g.status === "completed").length;
+  const focusGoals = focusCategory ? goals.filter((g) => g.category === focusCategory) : [];
+  const nudgeGoals = focusCategory ? goals.filter((g) => g.category !== focusCategory) : [];
 
   return (
     <div className="scroll-pane-wrap">
@@ -131,38 +168,29 @@ export default function TodayView({ showToast }) {
             <div className="empty-state">
               No pending goals left — add more under "All goals" 🎉
             </div>
+          ) : focusCategory ? (
+            <>
+              {focusGoals.length > 0 && (
+                <>
+                  <div className="today-section-label">This week's focus</div>
+                  {focusGoals.map((g) => (
+                    <GoalRow key={g.id} g={g} toggle={toggle} setJournalGoal={setJournalGoal} />
+                  ))}
+                </>
+              )}
+              {nudgeGoals.length > 0 && (
+                <>
+                  <div className="today-section-label">For variety</div>
+                  {nudgeGoals.map((g) => (
+                    <GoalRow key={g.id} g={g} toggle={toggle} setJournalGoal={setJournalGoal} />
+                  ))}
+                </>
+              )}
+            </>
           ) : (
-            goals.map((g) => {
-              const isDone = g.status === "completed";
-              const color = colorForCategory(g.category);
-              return (
-                <div className="goal-row" key={g.id}>
-                  <button
-                    className={`checkbox-btn ${isDone ? "done" : ""}`}
-                    onClick={() => toggle(g)}
-                    aria-label={isDone ? "Mark as not done" : "Mark as done"}
-                  >
-                    {isDone && <Check size={14} strokeWidth={3} />}
-                  </button>
-                  <div className="goal-body">
-                    <p className={`goal-title ${isDone ? "done" : ""}`}>{g.title}</p>
-                    <div className="goal-tags">
-                      <span className="category-chip" style={{ color }}>
-                        {g.category}
-                      </span>
-                    </div>
-                  </div>
-                  <button
-                    className={`journal-btn ${g.entry_count > 0 ? "has-entries" : ""}`}
-                    onClick={() => setJournalGoal(g)}
-                    aria-label="Open learning journal"
-                  >
-                    <NotebookPen size={13} />
-                    {g.entry_count > 0 && g.entry_count}
-                  </button>
-                </div>
-              );
-            })
+            goals.map((g) => (
+              <GoalRow key={g.id} g={g} toggle={toggle} setJournalGoal={setJournalGoal} />
+            ))
           )}
         </div>
       </div>

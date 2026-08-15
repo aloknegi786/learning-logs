@@ -40,6 +40,9 @@ export const api = {
   getSettings: () => request("/settings"),
   updateSettings: (updates) =>
     request("/settings", { method: "PUT", body: JSON.stringify(updates) }),
+  setFocusCategory: (categoryId) =>
+    request("/settings/focus", { method: "POST", body: JSON.stringify({ category_id: categoryId }) }),
+  clearFocusCategory: () => request("/settings/focus", { method: "DELETE" }),
 
   // activity heatmap
   getHeatmap: (days = 182) => request(`/activity/heatmap?days=${days}`),

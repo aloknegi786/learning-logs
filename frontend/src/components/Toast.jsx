@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { CheckCircle2, AlertCircle, X } from "lucide-react";
+import { CheckCircle2, AlertCircle, Info, X } from "lucide-react";
 
 let idCounter = 0;
 
@@ -25,21 +25,30 @@ export function useToasts() {
   return { toasts, showToast, dismiss };
 }
 
+const ICONS = {
+  error: AlertCircle,
+  info: Info,
+  success: CheckCircle2,
+};
+
 export default function ToastStack({ toasts, dismiss }) {
   if (toasts.length === 0) return null;
   return (
     <div className="toast-stack">
-      {toasts.map((t) => (
-        <div className={`toast ${t.type}`} key={t.id} role="status">
-          <span className="toast-icon">
-            {t.type === "error" ? <AlertCircle size={17} /> : <CheckCircle2 size={17} />}
-          </span>
-          <span>{t.message}</span>
-          <button className="toast-dismiss" onClick={() => dismiss(t.id)} aria-label="Dismiss">
-            <X size={15} />
-          </button>
-        </div>
-      ))}
+      {toasts.map((t) => {
+        const Icon = ICONS[t.type] || CheckCircle2;
+        return (
+          <div className={`toast ${t.type}`} key={t.id} role="status">
+            <span className="toast-icon">
+              <Icon size={17} />
+            </span>
+            <span>{t.message}</span>
+            <button className="toast-dismiss" onClick={() => dismiss(t.id)} aria-label="Dismiss">
+              <X size={15} />
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }

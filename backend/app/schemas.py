@@ -4,20 +4,37 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
-from .models import Category, Status
+from .models import Status
+
+
+# ---- categories (real, editable table now) ----
+
+class CategoryCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class CategoryUpdate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class CategoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
 
 
 class GoalCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    category: Category
+    category_id: uuid.UUID
     priority: int = 100
 
 
 class GoalUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
-    category: Optional[Category] = None
+    category_id: Optional[uuid.UUID] = None
     priority: Optional[int] = None
     status: Optional[Status] = None
 
@@ -28,7 +45,8 @@ class GoalOut(BaseModel):
     id: uuid.UUID
     title: str
     description: Optional[str]
-    category: Category
+    category_id: uuid.UUID
+    category: str  # resolved name, for display — see Goal.category property
     status: Status
     priority: int
     created_at: datetime
@@ -88,10 +106,17 @@ class SettingsOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     daily_goal_count: int
+    focus_category: Optional[CategoryOut] = None
+    focus_expires_on: Optional[date] = None
+    focus_days_remaining: Optional[int] = None
 
 
 class SettingsUpdate(BaseModel):
     daily_goal_count: int = Field(..., ge=1, le=20)
+
+
+class FocusCategorySet(BaseModel):
+    category_id: uuid.UUID
 
 
 # ---- daily selection (today) ----
@@ -99,10 +124,15 @@ class SettingsUpdate(BaseModel):
 class TodayOut(BaseModel):
     """Today's picks, plus how they were chosen — surfaced in the UI as a
     small badge (e.g. "AI-picked" vs a fallback method) so it's clear
-    whether the 3 AM job's LLM call succeeded that day."""
+    whether that day's LLM call succeeded. focus_category is set whenever
+    a category focus was active for this day's selection (drives the
+    "This week's focus" / "For variety" split in the UI); note carries a
+    one-off notice, e.g. a focus-category shortfall."""
 
     source: str  # GenerationSource value
     goals: list[GoalOut]
+    focus_category: Optional[str] = None
+    note: Optional[str] = None
 
 
 # ---- activity heatmap ----
@@ -125,6 +155,6 @@ class RecentCompletionOut(BaseModel):
 
     goal_id: Optional[uuid.UUID]
     goal_title: str
-    category: Category
+    category: str
     completed_on: date
     completed_at: datetime
