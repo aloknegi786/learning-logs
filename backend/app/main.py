@@ -28,14 +28,49 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/api/categories")
-def get_categories():
-    return [c.value for c in models.Category]
+@app.get("/api/categories", response_model=list[schemas.CategoryOut])
+def list_categories(db: Session = Depends(get_db)):
+    return crud.list_categories(db)
+
+
+@app.post("/api/categories", response_model=schemas.CategoryOut)
+def create_category(data: schemas.CategoryCreate, db: Session = Depends(get_db)):
+    cat = crud.create_category(db, data)
+    if not cat:
+        raise HTTPException(status_code=409, detail="A category with this name already exists")
+    return cat
+
+
+@app.patch("/api/categories/{category_id}", response_model=schemas.CategoryOut)
+def update_category(category_id: uuid.UUID, data: schemas.CategoryUpdate, db: Session = Depends(get_db)):
+    try:
+        cat = crud.update_category(db, category_id, data)
+    except ValueError:
+        raise HTTPException(status_code=409, detail="A category with this name already exists")
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return cat
+
+
+@app.delete("/api/categories/{category_id}")
+def delete_category(category_id: uuid.UUID, db: Session = Depends(get_db)):
+    deleted, in_use = crud.delete_category(db, category_id)
+    if not deleted:
+        if in_use > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{in_use} goal(s) still use this category — reassign or delete them first",
+            )
+        raise HTTPException(status_code=404, detail="Category not found")
+    return {"deleted": True}
 
 
 @app.post("/api/goals", response_model=schemas.GoalOut)
 def create_goal(goal: schemas.GoalCreate, db: Session = Depends(get_db)):
-    return crud.create_goal(db, goal)
+    created = crud.create_goal(db, goal)
+    if not created:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return created
 
 
 @app.get("/api/goals", response_model=list[schemas.GoalOut])
@@ -57,7 +92,10 @@ def get_goal_detail(goal_id: uuid.UUID, db: Session = Depends(get_db)):
 
 @app.patch("/api/goals/{goal_id}", response_model=schemas.GoalOut)
 def update_goal(goal_id: uuid.UUID, updates: schemas.GoalUpdate, db: Session = Depends(get_db)):
-    updated = crud.update_goal(db, goal_id, updates)
+    try:
+        updated = crud.update_goal(db, goal_id, updates)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Category not found")
     if not updated:
         raise HTTPException(status_code=404, detail="Goal not found")
     return updated
@@ -115,8 +153,8 @@ def get_today(db: Session = Depends(get_db)):
     """First request of a new day triggers generation right here (tries
     the LLM, falls back if needed — see app/daily_selection.py). Every
     later request that same day just returns what was already picked."""
-    goals, source = crud.get_or_create_today(db)
-    return {"source": source, "goals": goals}
+    goals, source, focus_category, note = crud.get_or_create_today(db)
+    return {"source": source, "goals": goals, "focus_category": focus_category, "note": note}
 
 
 @app.post("/api/today/regenerate", response_model=schemas.TodayOut)
@@ -126,8 +164,8 @@ def regenerate_today(db: Session = Depends(get_db)):
     today = date.today()
     db.query(models.DailyGoal).filter(models.DailyGoal.surfaced_on == today).delete()
     db.commit()
-    goals, source = crud.get_or_create_today(db)
-    return {"source": source, "goals": goals}
+    goals, source, focus_category, note = crud.get_or_create_today(db)
+    return {"source": source, "goals": goals, "focus_category": focus_category, "note": note}
 
 
 @app.get("/api/stats", response_model=schemas.StatsOut)
@@ -145,6 +183,19 @@ def get_settings(db: Session = Depends(get_db)):
 @app.put("/api/settings", response_model=schemas.SettingsOut)
 def update_settings(updates: schemas.SettingsUpdate, db: Session = Depends(get_db)):
     return crud.update_settings(db, updates)
+
+
+@app.post("/api/settings/focus", response_model=schemas.SettingsOut)
+def set_focus(data: schemas.FocusCategorySet, db: Session = Depends(get_db)):
+    settings = crud.set_focus_category(db, data.category_id)
+    if not settings:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return settings
+
+
+@app.delete("/api/settings/focus", response_model=schemas.SettingsOut)
+def clear_focus(db: Session = Depends(get_db)):
+    return crud.clear_focus_category(db)
 
 
 # ---- activity heatmap ----

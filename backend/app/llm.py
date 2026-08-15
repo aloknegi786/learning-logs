@@ -27,12 +27,14 @@ RETRY_WAIT = 2  # seconds between the 2 attempts
 
 
 class LLMSelectionError(Exception):
-    """Raised when the LLM call fails after all retries, or its response
-    can't be turned into a valid selection. Callers should catch this and
-    fall back to crud.generate_fallback_selection."""
+    """Raised when the LLM call fails after all retries, its response
+    can't be turned into a valid selection, or — when a focus category is
+    active — it didn't actually honor the ~60-70% focus ratio. Callers
+    should catch this and fall back to crud.generate_fallback_selection /
+    crud.generate_focus_aware_selection."""
 
 
-def _build_prompt(shortlist, recent_completions, recent_activity, count) -> str:
+def _build_prompt(shortlist, recent_completions, recent_activity, count, focus_category=None) -> str:
     shortlist_lines = [
         f"- id: {g.id} | category: {category} | title: {g.title}"
         for category, goals in shortlist.items()
@@ -41,8 +43,7 @@ def _build_prompt(shortlist, recent_completions, recent_activity, count) -> str:
     shortlist_text = "\n".join(shortlist_lines) or "(no pending goals)"
 
     recent_lines = [
-        f"- {e.completed_on.isoformat()}: {e.goal_title} "
-        f"[{e.category.value if hasattr(e.category, 'value') else e.category}]"
+        f"- {e.completed_on.isoformat()}: {e.goal_title} [{e.category}]"
         for e in recent_completions
     ]
     recent_text = "\n".join(recent_lines) or "(no completion history yet)"
@@ -52,6 +53,19 @@ def _build_prompt(shortlist, recent_completions, recent_activity, count) -> str:
         for day in recent_activity
     ]
     activity_text = "\n".join(activity_lines) or "(no recent daily activity)"
+
+    focus_instruction = ""
+    if focus_category:
+        focus_count, _ = crud.compute_focus_split(count)
+        focus_instruction = f"""
+TODAY'S FOCUS CATEGORY: {focus_category}
+The person has set this as their focus for the next few days. Aim for
+roughly {focus_count} of the {count} picks to come from "{focus_category}"
+specifically (about 60-70% of today's picks), with the rest from other
+categories for variety. If "{focus_category}" doesn't have enough candidates
+in the list above to hit that, fill the remainder from other categories
+instead — never reduce the total count below {count}.
+"""
 
     return f"""You are curating today's study plan for someone preparing for software engineering interviews.
 
@@ -63,7 +77,7 @@ THEIR LAST 10 COMPLETED GOALS (most recent first):
 
 THEIR ACTIVITY OVER THE LAST FEW DAYS (date: category counts):
 {activity_text}
-
+{focus_instruction}
 Pick exactly {count} goal ids from the candidate list above for today. Aim for a
 well-balanced, sensibly-sequenced set of topics — avoid just repeating whatever
 category they've done every day in a row, but do build on recent momentum where
@@ -96,10 +110,15 @@ def _call_groq(prompt: str) -> str:
     return data["choices"][0]["message"]["content"]
 
 
-def generate_with_llm(db, count: int) -> list[models.Goal]:
+def generate_with_llm(
+    db, count: int, focus_category: str | None = None
+) -> list[models.Goal]:
     """Up to 2 attempts, 2s apart. Raises LLMSelectionError if every
-    attempt fails or the response can't be validated against the
-    candidate shortlist — bounded so a live page load never hangs long."""
+    attempt fails, the response can't be validated against the candidate
+    shortlist, or — with a focus category active — the picks don't
+    actually satisfy the expected focus ratio (deterministic selection
+    doesn't need this check, since it's constructed to hit the ratio by
+    definition; only the LLM's output needs verifying after the fact)."""
     if not GROQ_API_KEY:
         raise LLMSelectionError("GROQ_API_KEY is not set — skipping LLM, no point retrying")
 
@@ -109,9 +128,14 @@ def generate_with_llm(db, count: int) -> list[models.Goal]:
     if not all_candidates:
         raise LLMSelectionError("No pending goals to choose from")
 
+    expected_focus_count = 0
+    if focus_category:
+        focus_target, _ = crud.compute_focus_split(count)
+        expected_focus_count = min(focus_target, len(shortlist.get(focus_category, [])))
+
     recent_completions = crud.get_recent_completions(db, limit=10)
     recent_activity = crud.get_recent_daily_activity(db, days=5)
-    prompt = _build_prompt(shortlist, recent_completions, recent_activity, count)
+    prompt = _build_prompt(shortlist, recent_completions, recent_activity, count, focus_category)
 
     last_error = None
     for attempt in range(ATTEMPTS):
@@ -129,7 +153,18 @@ def generate_with_llm(db, count: int) -> list[models.Goal]:
 
             if not picked:
                 raise LLMSelectionError("LLM response contained no valid candidate ids")
-            return picked[:count]
+
+            picked = picked[:count]
+
+            if focus_category and expected_focus_count > 0:
+                actual_focus_count = sum(1 for g in picked if g.category == focus_category)
+                if actual_focus_count < expected_focus_count:
+                    raise LLMSelectionError(
+                        f"LLM picks didn't satisfy the focus ratio: got {actual_focus_count} "
+                        f"from '{focus_category}', expected at least {expected_focus_count}"
+                    )
+
+            return picked
         except Exception as e:  # noqa: BLE001 — best-effort external call, any failure should retry/fallback
             last_error = e
             logger.warning("LLM selection attempt %d/%d failed: %s", attempt + 1, ATTEMPTS, e)
