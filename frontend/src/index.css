@@ -144,12 +144,13 @@ select:focus-visible {
     flex-shrink: 0;
   }
 
-.app-main {
+  .app-main {
     flex: 1;
     min-height: 0;
     display: flex;
     flex-direction: column;
   }
+
   .app-footer {
     flex-shrink: 0;
   }
@@ -608,6 +609,58 @@ select:focus-visible {
 }
 
 /* ---- filter pills ---- */
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  margin-bottom: 14px;
+  color: var(--text-faint);
+  transition: border-color 0.15s ease;
+}
+
+.search-bar:focus-within {
+  border-color: var(--accent);
+}
+
+.search-bar input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13.5px;
+  font-family: var(--sans);
+}
+
+.search-bar input:focus {
+  outline: none;
+}
+
+.search-bar input::placeholder {
+  color: var(--text-faint);
+}
+
+.search-clear {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  border-radius: 6px;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.search-clear:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
 .filter-pills {
   display: flex;
   flex-wrap: wrap;
@@ -655,6 +708,16 @@ select:focus-visible {
   letter-spacing: -0.01em;
 }
 
+.today-section-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin: 18px 0 4px;
+}
+
 /* ---- toast notifications ---- */
 .toast-stack {
   position: fixed;
@@ -688,6 +751,14 @@ select:focus-visible {
 
 .toast.error .toast-icon {
   color: var(--danger);
+}
+
+.toast.info {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+
+.toast.info .toast-icon {
+  color: var(--accent);
 }
 
 .toast-icon {
@@ -1074,6 +1145,40 @@ select:focus-visible {
   width: 100px;
 }
 
+.settings-divider {
+  height: 1px;
+  background: var(--line);
+  margin: 20px 0 16px;
+}
+
+.focus-active-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  background: var(--surface-raised);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.focus-active-banner strong {
+  color: var(--accent);
+}
+
+.focus-active-banner .btn-secondary {
+  margin-left: auto;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.focus-set-row {
+  display: flex;
+  gap: 10px;
+}
+
 /* ---- today source badge ---- */
 .source-badge {
   font-family: var(--mono);
@@ -1177,7 +1282,6 @@ select:focus-visible {
   color: var(--text-faint);
   overflow: visible;
   white-space: nowrap;
-  text-align: center;
 }
 
 .heatmap-month-gap {
@@ -1208,7 +1312,7 @@ select:focus-visible {
 }
 
 .heatmap-cell.level-empty {
-  background: transparent; /* Or #161b22 if you want a subtle empty box */
+  background: transparent;
 }
 
 .heatmap-cell.level-1 {
