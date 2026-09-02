@@ -31,15 +31,38 @@ class GenerationSource(str, enum.Enum):
     FALLBACK_ROUND_ROBIN = "fallback_round_robin"
 
 
-class Category(Base):
-    """A real, user-editable table now — not a fixed code-level enum.
-    Add/rename/delete freely from the app; deleting one that goals still
-    reference is blocked at the CRUD layer (see crud.delete_category)."""
+class User(Base):
+    """A logged-in account. google_sub (Google's stable per-account
+    identifier) is the real anchor — not email, since email can change on
+    a Google account but the underlying subject id doesn't. Every other
+    table's data is scoped to a user_id pointing here; each user's
+    workspace (goals, categories, progress) is fully isolated from every
+    other user's."""
 
-    __tablename__ = "categories"
+    __tablename__ = "users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(String(100), unique=True, nullable=False)
+    google_sub = Column(String(255), unique=True, nullable=False, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=True)
+    avatar_url = Column(String(2048), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_login_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Category(Base):
+    """A real, user-editable table — not a fixed code-level enum, and not
+    global either: each user has their own set (seeded from the standard
+    starter curriculum on their first login), so two different users can
+    both have a category named "DSA" without conflict — the uniqueness
+    constraint is scoped to (user_id, name), not name alone."""
+
+    __tablename__ = "categories"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_categories_user_name"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -47,6 +70,7 @@ class Goal(Base):
     __tablename__ = "goals"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False)
@@ -89,7 +113,10 @@ class Goal(Base):
 class JournalEntry(Base):
     """A single entry in a goal's learning journey: your own notes,
     a resource link (blog post, lecture video, docs), or both together.
-    A goal can have any number of these over time."""
+    A goal can have any number of these over time. No user_id column here
+    on purpose — ownership is scoped transitively through goal_id ->
+    Goal.user_id, so every query joins through the parent goal rather than
+    duplicating the owner on every entry."""
 
     __tablename__ = "journal_entries"
 
@@ -110,7 +137,7 @@ class DailyGoal(Base):
     """Records which goals were surfaced on which calendar day, so the
     home screen stays stable for the rest of that day instead of reshuffling
     on every request. Populated on the first /api/today request of a new
-    day (LLM-picked, or a deterministic fallback — see `source`).
+    day, per user (LLM-picked, or a deterministic fallback — see `source`).
 
     focus_category/note are snapshotted once per day (same value repeated
     on every row for that surfaced_on date) so a later visit that same day
@@ -120,6 +147,7 @@ class DailyGoal(Base):
     __tablename__ = "daily_goals"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     goal_id = Column(UUID(as_uuid=True), ForeignKey("goals.id"), nullable=False)
     surfaced_on = Column(Date, default=date.today, nullable=False, index=True)
     sort_order = Column(Integer, default=0, nullable=False)  # preserves the LLM's chosen order
@@ -152,6 +180,7 @@ class CompletionEvent(Base):
     __table_args__ = (UniqueConstraint("goal_id", name="uq_completion_events_goal_id"),)
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     goal_id = Column(
         UUID(as_uuid=True), ForeignKey("goals.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -163,10 +192,8 @@ class CompletionEvent(Base):
 
 
 class Settings(Base):
-    """Single-row app settings. Deliberately a plain table (not tied to a
-    user id) since this is a single-user tool today — but isolated here
-    rather than scattered as env vars, so it's easy to key by user_id later
-    without touching the rest of the schema.
+    """One row per user (not a global singleton anymore). Created
+    lazily/get-or-created the first time a user's settings are read.
 
     focus_category_id/focus_expires_on implement a temporary category bias
     for daily selection: null means no focus active. When set, it auto-
@@ -175,7 +202,8 @@ class Settings(Base):
 
     __tablename__ = "settings"
 
-    id = Column(Integer, primary_key=True, default=1)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), unique=True, nullable=False, index=True)
     daily_goal_count = Column(Integer, default=3, nullable=False)
     focus_category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=True)
     focus_expires_on = Column(Date, nullable=True)

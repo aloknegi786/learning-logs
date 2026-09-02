@@ -3,8 +3,15 @@ const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
 async function request(path, options = {}) {
   const res = await fetch(`${BASE_URL}${path}`, {
     headers: { "Content-Type": "application/json" },
+    credentials: "include", // sends the httpOnly session cookie cross-origin
     ...options,
   });
+  if (res.status === 401) {
+    // session missing/expired — let App.jsx drop back to the login screen
+    // from wherever the request happened to fail, instead of every caller
+    // needing its own 401-handling logic.
+    window.dispatchEvent(new CustomEvent("auth:unauthorized"));
+  }
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`${res.status}: ${body}`);
@@ -14,6 +21,12 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  // auth
+  loginWithGoogle: (idToken) =>
+    request("/auth/google", { method: "POST", body: JSON.stringify({ id_token: idToken }) }),
+  logout: () => request("/auth/logout", { method: "POST" }),
+  getMe: () => request("/auth/me"),
+
   getToday: () => request("/today"),
   getGoals: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
