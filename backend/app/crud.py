@@ -9,42 +9,59 @@ from . import models, schemas
 DEFAULT_DAILY_GOAL_COUNT = 3
 
 
-# ---- categories (real, editable table) ----
+# ---- categories (real, per-user editable table) ----
 
-def list_categories(db: Session) -> list[models.Category]:
-    return db.query(models.Category).order_by(models.Category.name.asc()).all()
-
-
-def get_category(db: Session, category_id) -> models.Category | None:
-    return db.query(models.Category).filter(models.Category.id == category_id).first()
-
-
-def get_category_by_name(db: Session, name: str) -> models.Category | None:
-    return db.query(models.Category).filter(models.Category.name == name).first()
+def list_categories(db: Session, user_id) -> list[models.Category]:
+    return (
+        db.query(models.Category)
+        .filter(models.Category.user_id == user_id)
+        .order_by(models.Category.name.asc())
+        .all()
+    )
 
 
-def create_category(db: Session, data: schemas.CategoryCreate) -> models.Category | None:
-    """Returns None if a category with this name already exists — the
-    route turns that into a 409, rather than hitting the DB's unique
-    constraint and surfacing a raw IntegrityError."""
+def get_category(db: Session, user_id, category_id) -> models.Category | None:
+    return (
+        db.query(models.Category)
+        .filter(models.Category.id == category_id, models.Category.user_id == user_id)
+        .first()
+    )
+
+
+def get_category_by_name(db: Session, user_id, name: str) -> models.Category | None:
+    return (
+        db.query(models.Category)
+        .filter(models.Category.name == name, models.Category.user_id == user_id)
+        .first()
+    )
+
+
+def create_category(db: Session, user_id, data: schemas.CategoryCreate) -> models.Category | None:
+    """Returns None if this user already has a category with this name —
+    the route turns that into a 409, rather than hitting the DB's unique
+    constraint and surfacing a raw IntegrityError. (Two different users
+    can both have a "DSA" category — uniqueness is scoped per user.)"""
     name = data.name.strip()
-    if get_category_by_name(db, name):
+    if get_category_by_name(db, user_id, name):
         return None
-    cat = models.Category(name=name)
+    cat = models.Category(user_id=user_id, name=name)
     db.add(cat)
     db.commit()
     db.refresh(cat)
     return cat
 
 
-def update_category(db: Session, category_id, data: schemas.CategoryUpdate) -> models.Category | None:
-    """Raises ValueError('duplicate') if renaming to a name already used by
-    a different category. Returns None if category_id doesn't exist."""
-    cat = get_category(db, category_id)
+def update_category(
+    db: Session, user_id, category_id, data: schemas.CategoryUpdate
+) -> models.Category | None:
+    """Raises ValueError('duplicate') if renaming to a name this user
+    already uses elsewhere. Returns None if category_id doesn't exist (or
+    belongs to a different user)."""
+    cat = get_category(db, user_id, category_id)
     if not cat:
         return None
     name = data.name.strip()
-    existing = get_category_by_name(db, name)
+    existing = get_category_by_name(db, user_id, name)
     if existing and existing.id != cat.id:
         raise ValueError("duplicate")
     cat.name = name
@@ -53,14 +70,18 @@ def update_category(db: Session, category_id, data: schemas.CategoryUpdate) -> m
     return cat
 
 
-def delete_category(db: Session, category_id) -> tuple[bool, int]:
+def delete_category(db: Session, user_id, category_id) -> tuple[bool, int]:
     """Returns (deleted, goals_still_using_it). Deletion is blocked while
-    any goal still references this category — reassign or delete those
-    goals first, rather than silently orphaning them."""
-    cat = get_category(db, category_id)
+    any of this user's goals still reference this category — reassign or
+    delete those goals first, rather than silently orphaning them."""
+    cat = get_category(db, user_id, category_id)
     if not cat:
         return False, 0
-    in_use = db.query(models.Goal).filter(models.Goal.category_id == category_id).count()
+    in_use = (
+        db.query(models.Goal)
+        .filter(models.Goal.category_id == category_id, models.Goal.user_id == user_id)
+        .count()
+    )
     if in_use > 0:
         return False, in_use
     db.delete(cat)
@@ -68,11 +89,12 @@ def delete_category(db: Session, category_id) -> tuple[bool, int]:
     return True, 0
 
 
-def create_goal(db: Session, goal: schemas.GoalCreate) -> models.Goal | None:
-    """Returns None if goal.category_id doesn't reference a real category."""
-    if not get_category(db, goal.category_id):
+def create_goal(db: Session, user_id, goal: schemas.GoalCreate) -> models.Goal | None:
+    """Returns None if goal.category_id doesn't reference one of this
+    user's categories."""
+    if not get_category(db, user_id, goal.category_id):
         return None
-    db_goal = models.Goal(**goal.model_dump())
+    db_goal = models.Goal(user_id=user_id, **goal.model_dump())
     db.add(db_goal)
     db.commit()
     db.refresh(db_goal)
@@ -82,7 +104,10 @@ def create_goal(db: Session, goal: schemas.GoalCreate) -> models.Goal | None:
 def attach_entry_counts(db: Session, goals: list[models.Goal]) -> list[models.Goal]:
     """One grouped query for the whole list, instead of lazy-loading
     journal_entries per goal (which is what Goal.entry_count would do on
-    its own — an N+1 that shows up on every /api/goals and /api/today call)."""
+    its own — an N+1 that shows up on every /api/goals and /api/today call).
+    No user_id needed here — the goals list handed in is already scoped by
+    whoever queried it, and journal_entries are looked up strictly by
+    those goals' ids."""
     if not goals:
         return goals
     ids = [g.id for g in goals]
@@ -100,10 +125,15 @@ def attach_entry_counts(db: Session, goals: list[models.Goal]) -> list[models.Go
 
 def list_goals(
     db: Session,
+    user_id,
     category: str | None = None,
     status: str | None = None,
 ):
-    q = db.query(models.Goal).options(joinedload(models.Goal.category_obj))
+    q = (
+        db.query(models.Goal)
+        .options(joinedload(models.Goal.category_obj))
+        .filter(models.Goal.user_id == user_id)
+    )
     if category:
         q = q.join(models.Category).filter(models.Category.name == category)
     if status:
@@ -112,11 +142,11 @@ def list_goals(
     return attach_entry_counts(db, goals)
 
 
-def get_goal(db: Session, goal_id):
+def get_goal(db: Session, user_id, goal_id):
     return (
         db.query(models.Goal)
         .options(joinedload(models.Goal.category_obj))
-        .filter(models.Goal.id == goal_id)
+        .filter(models.Goal.id == goal_id, models.Goal.user_id == user_id)
         .first()
     )
 
@@ -124,7 +154,8 @@ def get_goal(db: Session, goal_id):
 def record_completion_event(db: Session, goal: models.Goal) -> None:
     """Append-only: only ever inserts once per goal, on its first-ever
     completion. Safe to call every time a goal is marked completed —
-    re-completions after an uncheck are silently ignored."""
+    re-completions after an uncheck are silently ignored. user_id is
+    taken from the goal itself (already scoped by the caller)."""
     already_recorded = (
         db.query(models.CompletionEvent)
         .filter(models.CompletionEvent.goal_id == goal.id)
@@ -133,6 +164,7 @@ def record_completion_event(db: Session, goal: models.Goal) -> None:
     if already_recorded:
         return
     event = models.CompletionEvent(
+        user_id=goal.user_id,
         goal_id=goal.id,
         goal_title=goal.title,
         category=goal.category,  # snapshotted name string at completion time
@@ -147,14 +179,14 @@ def record_completion_event(db: Session, goal: models.Goal) -> None:
         db.rollback()
 
 
-def update_goal(db: Session, goal_id, updates: schemas.GoalUpdate):
+def update_goal(db: Session, user_id, goal_id, updates: schemas.GoalUpdate):
     """Raises ValueError('category not found') if updates.category_id is
-    set but doesn't reference a real category."""
-    db_goal = get_goal(db, goal_id)
+    set but doesn't reference one of this user's categories."""
+    db_goal = get_goal(db, user_id, goal_id)
     if not db_goal:
         return None
     data = updates.model_dump(exclude_unset=True)
-    if "category_id" in data and not get_category(db, data["category_id"]):
+    if "category_id" in data and not get_category(db, user_id, data["category_id"]):
         raise ValueError("category not found")
     newly_completed = (
         data.get("status") == models.Status.COMPLETED
@@ -173,8 +205,8 @@ def update_goal(db: Session, goal_id, updates: schemas.GoalUpdate):
     return db_goal
 
 
-def delete_goal(db: Session, goal_id) -> bool:
-    db_goal = get_goal(db, goal_id)
+def delete_goal(db: Session, user_id, goal_id) -> bool:
+    db_goal = get_goal(db, user_id, goal_id)
     if not db_goal:
         return False
     db.delete(db_goal)
@@ -207,8 +239,13 @@ def _round_robin_pick(pending_goals: list[models.Goal], count: int) -> list[mode
     return picked
 
 
-def get_stats(db: Session) -> dict:
-    goals = db.query(models.Goal).options(joinedload(models.Goal.category_obj)).all()
+def get_stats(db: Session, user_id) -> dict:
+    goals = (
+        db.query(models.Goal)
+        .options(joinedload(models.Goal.category_obj))
+        .filter(models.Goal.user_id == user_id)
+        .all()
+    )
     total = len(goals)
     completed = sum(1 for g in goals if g.status == models.Status.COMPLETED)
 
@@ -223,20 +260,24 @@ def get_stats(db: Session) -> dict:
 
 
 # ---- journal entries (per-goal learning journey) ----
+# No user_id column on JournalEntry itself — ownership is enforced by
+# joining through goal_id -> Goal.user_id on every query, so an entry on
+# someone else's goal is simply invisible/unreachable, never a 403 leak.
 
-def list_journal_entries(db: Session, goal_id) -> list[models.JournalEntry]:
+def list_journal_entries(db: Session, user_id, goal_id) -> list[models.JournalEntry]:
     return (
         db.query(models.JournalEntry)
-        .filter(models.JournalEntry.goal_id == goal_id)
+        .join(models.Goal, models.JournalEntry.goal_id == models.Goal.id)
+        .filter(models.JournalEntry.goal_id == goal_id, models.Goal.user_id == user_id)
         .order_by(models.JournalEntry.created_at.desc())
         .all()
     )
 
 
 def create_journal_entry(
-    db: Session, goal_id, entry: schemas.JournalEntryCreate
+    db: Session, user_id, goal_id, entry: schemas.JournalEntryCreate
 ) -> models.JournalEntry | None:
-    if not get_goal(db, goal_id):
+    if not get_goal(db, user_id, goal_id):
         return None
     db_entry = models.JournalEntry(goal_id=goal_id, **entry.model_dump())
     db.add(db_entry)
@@ -245,18 +286,19 @@ def create_journal_entry(
     return db_entry
 
 
-def get_journal_entry(db: Session, entry_id) -> models.JournalEntry | None:
+def get_journal_entry(db: Session, user_id, entry_id) -> models.JournalEntry | None:
     return (
         db.query(models.JournalEntry)
-        .filter(models.JournalEntry.id == entry_id)
+        .join(models.Goal, models.JournalEntry.goal_id == models.Goal.id)
+        .filter(models.JournalEntry.id == entry_id, models.Goal.user_id == user_id)
         .first()
     )
 
 
 def update_journal_entry(
-    db: Session, entry_id, updates: schemas.JournalEntryUpdate
+    db: Session, user_id, entry_id, updates: schemas.JournalEntryUpdate
 ) -> models.JournalEntry | None:
-    db_entry = get_journal_entry(db, entry_id)
+    db_entry = get_journal_entry(db, user_id, entry_id)
     if not db_entry:
         return None
     for key, value in updates.model_dump(exclude_unset=True).items():
@@ -266,8 +308,8 @@ def update_journal_entry(
     return db_entry
 
 
-def delete_journal_entry(db: Session, entry_id) -> bool:
-    db_entry = get_journal_entry(db, entry_id)
+def delete_journal_entry(db: Session, user_id, entry_id) -> bool:
+    db_entry = get_journal_entry(db, user_id, entry_id)
     if not db_entry:
         return False
     db.delete(db_entry)
@@ -275,17 +317,17 @@ def delete_journal_entry(db: Session, entry_id) -> bool:
     return True
 
 
-# ---- settings ----
+# ---- settings (one row per user) ----
 
-def get_settings(db: Session) -> models.Settings:
+def get_settings(db: Session, user_id) -> models.Settings:
     settings = (
         db.query(models.Settings)
         .options(joinedload(models.Settings.focus_category))
-        .filter(models.Settings.id == 1)
+        .filter(models.Settings.user_id == user_id)
         .first()
     )
     if not settings:
-        settings = models.Settings(id=1, daily_goal_count=DEFAULT_DAILY_GOAL_COUNT)
+        settings = models.Settings(user_id=user_id, daily_goal_count=DEFAULT_DAILY_GOAL_COUNT)
         db.add(settings)
         db.commit()
         db.refresh(settings)
@@ -301,21 +343,21 @@ def get_settings(db: Session) -> models.Settings:
     return settings
 
 
-def update_settings(db: Session, updates: schemas.SettingsUpdate) -> models.Settings:
-    settings = get_settings(db)
+def update_settings(db: Session, user_id, updates: schemas.SettingsUpdate) -> models.Settings:
+    settings = get_settings(db, user_id)
     settings.daily_goal_count = updates.daily_goal_count
     db.commit()
     db.refresh(settings)
     return settings
 
 
-def set_focus_category(db: Session, category_id) -> models.Settings | None:
-    """Returns None if category_id doesn't reference a real category.
-    Always resets the 7-day expiry window, even if re-setting the same
-    category that's already focused."""
-    if not get_category(db, category_id):
+def set_focus_category(db: Session, user_id, category_id) -> models.Settings | None:
+    """Returns None if category_id doesn't reference one of this user's
+    categories. Always resets the 7-day expiry window, even if re-setting
+    the same category that's already focused."""
+    if not get_category(db, user_id, category_id):
         return None
-    settings = get_settings(db)
+    settings = get_settings(db, user_id)
     settings.focus_category_id = category_id
     settings.focus_expires_on = date.today() + timedelta(days=7)
     db.commit()
@@ -323,8 +365,8 @@ def set_focus_category(db: Session, category_id) -> models.Settings | None:
     return settings
 
 
-def clear_focus_category(db: Session) -> models.Settings:
-    settings = get_settings(db)
+def clear_focus_category(db: Session, user_id) -> models.Settings:
+    settings = get_settings(db, user_id)
     settings.focus_category_id = None
     settings.focus_expires_on = None
     db.commit()
@@ -344,14 +386,14 @@ def compute_focus_split(daily_count: int) -> tuple[int, int]:
 
 # ---- daily selection: candidate pool + LLM/fallback context ----
 
-def get_candidate_shortlist(db: Session, per_category: int = 5) -> dict[str, list[models.Goal]]:
+def get_candidate_shortlist(db: Session, user_id, per_category: int = 5) -> dict[str, list[models.Goal]]:
     """Next N pending goals per category, in priority order — the shortlist
     the LLM (or the fallback logic) actually picks from, rather than
     handing it the entire backlog."""
     pending = (
         db.query(models.Goal)
         .options(joinedload(models.Goal.category_obj))
-        .filter(models.Goal.status == models.Status.PENDING)
+        .filter(models.Goal.status == models.Status.PENDING, models.Goal.user_id == user_id)
         .order_by(models.Goal.priority.asc(), models.Goal.created_at.asc())
         .all()
     )
@@ -363,23 +405,24 @@ def get_candidate_shortlist(db: Session, per_category: int = 5) -> dict[str, lis
     return by_category
 
 
-def get_recent_completions(db: Session, limit: int = 10) -> list[models.CompletionEvent]:
+def get_recent_completions(db: Session, user_id, limit: int = 10) -> list[models.CompletionEvent]:
     return (
         db.query(models.CompletionEvent)
+        .filter(models.CompletionEvent.user_id == user_id)
         .order_by(models.CompletionEvent.completed_at.desc())
         .limit(limit)
         .all()
     )
 
 
-def get_recent_daily_activity(db: Session, days: int = 5) -> list[dict]:
+def get_recent_daily_activity(db: Session, user_id, days: int = 5) -> list[dict]:
     """Last N *distinct dates* that have any completions, each with a
     per-category breakdown — e.g. [{"date": "2026-08-03", "categories":
     {"DSA": 2, "High Level Design": 1}}, ...], most recent first."""
     since = date.today() - timedelta(days=days * 3)  # generous window in case of gaps
     events = (
         db.query(models.CompletionEvent)
-        .filter(models.CompletionEvent.completed_on >= since)
+        .filter(models.CompletionEvent.user_id == user_id, models.CompletionEvent.completed_on >= since)
         .order_by(models.CompletionEvent.completed_on.desc())
         .all()
     )
@@ -397,14 +440,14 @@ def get_recent_daily_activity(db: Session, days: int = 5) -> list[dict]:
 
 # ---- daily selection: fallback (no LLM / LLM failed) ----
 
-def _select_from_pool(db: Session, pool: list[models.Goal], count: int) -> list[models.Goal]:
+def _select_from_pool(db: Session, user_id, pool: list[models.Goal], count: int) -> list[models.Goal]:
     """The actual history-then-round-robin logic, scoped to whatever pool
     of goals it's handed — used both for the plain (no-focus) fallback and
     for filling the nudge slots when a focus category is active."""
     if not pool or count <= 0:
         return []
 
-    recent = get_recent_completions(db, limit=10)
+    recent = get_recent_completions(db, user_id, limit=10)
     if not recent:
         return _round_robin_pick(pool, count)
 
@@ -432,7 +475,7 @@ def _select_from_pool(db: Session, pool: list[models.Goal], count: int) -> list[
     return picked[:count]
 
 
-def generate_fallback_selection(db: Session, count: int) -> list[models.Goal]:
+def generate_fallback_selection(db: Session, user_id, count: int) -> list[models.Goal]:
     """Deterministic fallback used when the LLM call fails after retries,
     or when there's nothing to send it yet, and no category focus is
     active — see generate_focus_aware_selection for the focus-active case.
@@ -444,24 +487,28 @@ def generate_fallback_selection(db: Session, count: int) -> list[models.Goal]:
     pending = (
         db.query(models.Goal)
         .options(joinedload(models.Goal.category_obj))
-        .filter(models.Goal.status == models.Status.PENDING)
+        .filter(models.Goal.status == models.Status.PENDING, models.Goal.user_id == user_id)
         .order_by(models.Goal.priority.asc(), models.Goal.created_at.asc())
         .all()
     )
-    return _select_from_pool(db, pending, count)
+    return _select_from_pool(db, user_id, pending, count)
 
 
-def get_focus_candidate_count(db: Session, focus_category_name: str) -> int:
+def get_focus_candidate_count(db: Session, user_id, focus_category_name: str) -> int:
     return (
         db.query(models.Goal)
         .join(models.Category)
-        .filter(models.Goal.status == models.Status.PENDING, models.Category.name == focus_category_name)
+        .filter(
+            models.Goal.status == models.Status.PENDING,
+            models.Goal.user_id == user_id,
+            models.Category.name == focus_category_name,
+        )
         .count()
     )
 
 
 def generate_focus_aware_selection(
-    db: Session, count: int, focus_category_name: str
+    db: Session, user_id, count: int, focus_category_name: str
 ) -> tuple[list[models.Goal], int, int]:
     """Fills ~60-70% of today's slots from the focus category first (up to
     however many pending goals it actually has — never shrinking the day's
@@ -474,7 +521,7 @@ def generate_focus_aware_selection(
     pending = (
         db.query(models.Goal)
         .options(joinedload(models.Goal.category_obj))
-        .filter(models.Goal.status == models.Status.PENDING)
+        .filter(models.Goal.status == models.Status.PENDING, models.Goal.user_id == user_id)
         .order_by(models.Goal.priority.asc(), models.Goal.created_at.asc())
         .all()
     )
@@ -485,30 +532,28 @@ def generate_focus_aware_selection(
     expected_focus_count = min(focus_target, len(focus_pending))
 
     remaining_needed = count - len(focus_picked)
-    nudge_picked = _select_from_pool(db, other_pending, remaining_needed)
+    nudge_picked = _select_from_pool(db, user_id, other_pending, remaining_needed)
 
-    # if even focus + every other category together can't fill the count
-    # (i.e. very few pending goals overall), that's an existing, unrelated
-    # limitation — same as the no-focus path when the backlog runs low.
     picked = focus_picked + nudge_picked
     return picked, len(focus_picked), expected_focus_count
 
 
 def apply_daily_selection(
     db: Session,
+    user_id,
     target_date: date,
     goals: list[models.Goal],
     source: models.GenerationSource,
     focus_category: str | None = None,
     note: str | None = None,
 ) -> list[models.Goal]:
-    """Idempotent: if daily_goals rows already exist for target_date, this
-    is a no-op (returns the existing selection instead). focus_category/note
-    are snapshotted identically on every row for this day (see DailyGoal's
-    docstring for why)."""
+    """Idempotent: if daily_goals rows already exist for this user on
+    target_date, this is a no-op (returns the existing selection instead).
+    focus_category/note are snapshotted identically on every row for this
+    day (see DailyGoal's docstring for why)."""
     existing = (
         db.query(models.DailyGoal)
-        .filter(models.DailyGoal.surfaced_on == target_date)
+        .filter(models.DailyGoal.surfaced_on == target_date, models.DailyGoal.user_id == user_id)
         .all()
     )
     if existing:
@@ -526,6 +571,7 @@ def apply_daily_selection(
     for idx, g in enumerate(goals):
         db.add(
             models.DailyGoal(
+                user_id=user_id,
                 goal_id=g.id,
                 surfaced_on=target_date,
                 sort_order=idx,
@@ -538,11 +584,11 @@ def apply_daily_selection(
     return goals
 
 
-def get_today_meta(db: Session, target_date: date) -> tuple[str, str | None, str | None]:
+def get_today_meta(db: Session, user_id, target_date: date) -> tuple[str, str | None, str | None]:
     """Returns (source, focus_category, note) for an already-decided day."""
     row = (
         db.query(models.DailyGoal)
-        .filter(models.DailyGoal.surfaced_on == target_date)
+        .filter(models.DailyGoal.surfaced_on == target_date, models.DailyGoal.user_id == user_id)
         .first()
     )
     if not row:
@@ -551,16 +597,16 @@ def get_today_meta(db: Session, target_date: date) -> tuple[str, str | None, str
     return source, row.focus_category, row.note
 
 
-def get_or_create_today(db: Session) -> tuple[list[models.Goal], str, str | None, str | None]:
+def get_or_create_today(db: Session, user_id) -> tuple[list[models.Goal], str, str | None, str | None]:
     """The sole trigger for daily selection: runs on the first /api/today
-    request of a new calendar day (see app/daily_selection.py for the
-    LLM-then-fallback logic, and llm.py's module docstring for why its
-    retries are short: a person is waiting on this request).
+    request of a new calendar day, per user (see app/daily_selection.py
+    for the LLM-then-fallback logic, and llm.py's module docstring for why
+    its retries are short: a person is waiting on this request).
     Returns (goals, source, focus_category, note)."""
     today = date.today()
     existing = (
         db.query(models.DailyGoal)
-        .filter(models.DailyGoal.surfaced_on == today)
+        .filter(models.DailyGoal.surfaced_on == today, models.DailyGoal.user_id == user_id)
         .order_by(models.DailyGoal.sort_order.asc())
         .all()
     )
@@ -574,25 +620,25 @@ def get_or_create_today(db: Session) -> tuple[list[models.Goal], str, str | None
         )
         order = {gid: idx for idx, gid in enumerate(goal_ids)}
         goals.sort(key=lambda g: order[g.id])
-        source, focus_category, note = get_today_meta(db, today)
+        source, focus_category, note = get_today_meta(db, user_id, today)
         return attach_entry_counts(db, goals), source, focus_category, note
 
     from .daily_selection import generate_for_today  # local import: avoids a
     # circular import with llm.py (which imports crud.py at module load time)
 
-    picked, source, focus_category, note = generate_for_today(db)
-    saved = apply_daily_selection(db, today, picked, source, focus_category, note)
+    picked, source, focus_category, note = generate_for_today(db, user_id)
+    saved = apply_daily_selection(db, user_id, today, picked, source, focus_category, note)
     return attach_entry_counts(db, saved), source.value, focus_category, note
 
 
 # ---- activity heatmap ----
 
-def get_heatmap_data(db: Session, days: int = 365) -> dict:
+def get_heatmap_data(db: Session, user_id, days: int = 365) -> dict:
     start = date.today() - timedelta(days=days - 1)
 
     events = (
         db.query(models.CompletionEvent)
-        .filter(models.CompletionEvent.completed_on >= start)
+        .filter(models.CompletionEvent.user_id == user_id, models.CompletionEvent.completed_on >= start)
         .all()
     )
     counts_by_date: dict[date, int] = {}
@@ -601,15 +647,13 @@ def get_heatmap_data(db: Session, days: int = 365) -> dict:
 
     daily_rows = (
         db.query(models.DailyGoal)
-        .filter(models.DailyGoal.surfaced_on >= start)
+        .filter(models.DailyGoal.user_id == user_id, models.DailyGoal.surfaced_on >= start)
         .all()
     )
     surfaced_by_date: dict[date, list] = {}
     for row in daily_rows:
         surfaced_by_date.setdefault(row.surfaced_on, []).append(row.goal_id)
 
-    # one query for every goal_id involved across the whole window, instead
-    # of one query per date (this used to be O(days-with-activity) queries)
     all_goal_ids = {gid for ids in surfaced_by_date.values() for gid in ids}
     status_by_id: dict = {}
     if all_goal_ids:
@@ -640,7 +684,6 @@ def get_heatmap_data(db: Session, days: int = 365) -> dict:
         )
         cursor += timedelta(days=1)
 
-    # streaks: consecutive calendar days (walking backward from today) with count > 0
     current_streak = 0
     cursor = today
     active_dates = set(counts_by_date.keys())
@@ -657,7 +700,7 @@ def get_heatmap_data(db: Session, days: int = 365) -> dict:
         else:
             run = 0
 
-    total_completions = db.query(models.CompletionEvent).count()
+    total_completions = db.query(models.CompletionEvent).filter(models.CompletionEvent.user_id == user_id).count()
 
     return {
         "days": days_out,

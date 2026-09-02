@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { Settings } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Settings, LogOut } from "lucide-react";
+import { api } from "./api";
 import TodayView from "./components/TodayView";
 import AllGoalsView from "./components/AllGoalsView";
 import ActivityView from "./components/ActivityView";
@@ -7,11 +8,80 @@ import ToastStack, { useToasts } from "./components/Toast";
 import ScrollToTopButton from "./components/ScrollToTopButton";
 import Footer from "./components/Footer";
 import SettingsModal from "./components/SettingsModal";
+import Login from "./components/Login";
 
 export default function App() {
+  // "loading" | "authenticated" | "unauthenticated"
+  const [authState, setAuthState] = useState("loading");
+  const [user, setUser] = useState(null);
   const [tab, setTab] = useState("today");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { toasts, showToast, dismiss } = useToasts();
+
+  const checkAuth = useCallback(() => {
+    api
+      .getMe()
+      .then((me) => {
+        setUser(me);
+        setAuthState("authenticated");
+      })
+      .catch(() => {
+        setUser(null);
+        setAuthState("unauthenticated");
+      });
+  }, []);
+
+  useEffect(() => {
+    checkAuth();
+  }, [checkAuth]);
+
+  // api.js dispatches this on any 401 — drops back to the login screen from
+  // wherever the request happened to fail, not just on initial page load.
+  useEffect(() => {
+    function handleUnauthorized() {
+      setUser(null);
+      setAuthState("unauthenticated");
+    }
+    window.addEventListener("auth:unauthorized", handleUnauthorized);
+    return () => window.removeEventListener("auth:unauthorized", handleUnauthorized);
+  }, []);
+
+  function handleLoggedIn(result) {
+    setUser(result.user);
+    setAuthState("authenticated");
+    if (result.hydrated) {
+      showToast("Welcome back — we've loaded your existing progress.");
+    } else if (result.is_new_user) {
+      showToast("Welcome! We've set you up with a starter curriculum across 7 categories.");
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await api.logout();
+    } catch (e) {
+      // even if the request itself fails, still drop the local session
+    }
+    setUser(null);
+    setAuthState("unauthenticated");
+  }
+
+  if (authState === "loading") {
+    return (
+      <div className="app-shell">
+        <div className="empty-state">Loading…</div>
+      </div>
+    );
+  }
+
+  if (authState === "unauthenticated") {
+    return (
+      <>
+        <Login onLoggedIn={handleLoggedIn} />
+        <ToastStack toasts={toasts} dismiss={dismiss} />
+      </>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -21,13 +91,23 @@ export default function App() {
         <p className="app-subtitle">
           One day's worth of CS fundamentals, system design &amp; DSA at a time.
         </p>
-        <button
-          className="settings-btn"
-          onClick={() => setSettingsOpen(true)}
-          aria-label="Open settings"
-        >
-          <Settings size={17} />
-        </button>
+        <div className="header-actions">
+          <button
+            className="settings-btn"
+            onClick={() => setSettingsOpen(true)}
+            aria-label="Open settings"
+          >
+            <Settings size={17} />
+          </button>
+          <button
+            className="logout-btn"
+            onClick={handleLogout}
+            aria-label="Log out"
+            title={user?.email}
+          >
+            <LogOut size={17} />
+          </button>
+        </div>
       </header>
 
       <nav className="tabs">

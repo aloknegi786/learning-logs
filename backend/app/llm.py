@@ -111,7 +111,7 @@ def _call_groq(prompt: str) -> str:
 
 
 def generate_with_llm(
-    db, count: int, focus_category: str | None = None
+    db, user_id, count: int, focus_category: str | None = None
 ) -> list[models.Goal]:
     """Up to 2 attempts, 2s apart. Raises LLMSelectionError if every
     attempt fails, the response can't be validated against the candidate
@@ -122,7 +122,7 @@ def generate_with_llm(
     if not GROQ_API_KEY:
         raise LLMSelectionError("GROQ_API_KEY is not set — skipping LLM, no point retrying")
 
-    shortlist = crud.get_candidate_shortlist(db)
+    shortlist = crud.get_candidate_shortlist(db, user_id)
     all_candidates = {str(g.id): g for goals in shortlist.values() for g in goals}
 
     if not all_candidates:
@@ -133,8 +133,8 @@ def generate_with_llm(
         focus_target, _ = crud.compute_focus_split(count)
         expected_focus_count = min(focus_target, len(shortlist.get(focus_category, [])))
 
-    recent_completions = crud.get_recent_completions(db, limit=10)
-    recent_activity = crud.get_recent_daily_activity(db, days=5)
+    recent_completions = crud.get_recent_completions(db, user_id, limit=10)
+    recent_activity = crud.get_recent_daily_activity(db, user_id, days=5)
     prompt = _build_prompt(shortlist, recent_completions, recent_activity, count, focus_category)
 
     last_error = None

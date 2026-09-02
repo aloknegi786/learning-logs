@@ -7,6 +7,32 @@ from pydantic import BaseModel, Field, ConfigDict, model_validator
 from .models import Status
 
 
+# ---- auth ----
+
+class GoogleLoginRequest(BaseModel):
+    id_token: str
+
+
+class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    email: str
+    name: Optional[str]
+    avatar_url: Optional[str]
+
+
+class LoginResponse(BaseModel):
+    """Returned once, right after login. is_new_user drives the frontend's
+    welcome message — distinct wording depending on whether this account
+    got the standard starter curriculum or (for the app's original owner)
+    their real hydrated history — see hydrated."""
+
+    user: UserOut
+    is_new_user: bool
+    hydrated: bool = False
+
+
 # ---- categories (real, editable table now) ----
 
 class CategoryCreate(BaseModel):
